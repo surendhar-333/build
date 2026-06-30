@@ -32,7 +32,10 @@ INTERNAL_PATH = f"{VOLUME_ROOT}/internal"
 NETWORK_PATH = f"{VOLUME_ROOT}/network"
 
 # Generation parameters
-ROWS_INTERNAL = 100_000          # bump to 1_000_000+ in the Phase 6 scale lab
+# Phase 6's scale lab drives row count via a "rows" widget passed through dbutils.notebook.run.
+# When run standalone the widget defaults to 100_000; bump it (or pass rows=1000000) for the scale lab.
+dbutils.widgets.text("rows", "100000")
+ROWS_INTERNAL = int(dbutils.widgets.get("rows"))   # default 100_000; overridden by Phase 6 scale lab
 NETWORK_DROP_RATE = 0.05         # ~5% of network records go missing  -> UNMATCHED exceptions
 AMOUNT_MISMATCH_RATE = 0.02      # ~2% have a wrong amount             -> MISMATCH exceptions
 STATUS_MISMATCH_RATE = 0.02      # ~2% have a wrong status             -> MISMATCH exceptions

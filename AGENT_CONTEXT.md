@@ -51,27 +51,34 @@ edit notebooks here  →  git commit + push  →  user clicks "Pull" in the Data
 
 ## Current state (update this section as you go)
 
+**All six phase notebooks are authored, reviewed, and committed.** Built by a multi-agent run, then
+adversarially reviewed and consistency-checked (table/column contract verified consistent end-to-end).
+
 - ✅ `notebooks/00_hello_databricks.py` — smoke test, proves the git→pull→run round-trip.
-- ✅ `notebooks/01_phase1_data_generation.py` — **Phase 1** (config / generator functions / generate+land).
-  - Cell 1: catalog/schema/volume config (`workspace.settlement_recon.landing`).
-  - Cell 2: `build_internal()` + `build_network()` (drop 5%, amount-mismatch 2%, status-mismatch 2%).
-  - Cell 3: generate one business day (`2026-06-30`, 100K internal rows) and land CSV to the volume.
-- ⏳ **Awaiting user run of Phase 1.** Expected: internal ≈ 100,000; network slightly fewer (~95,000);
-  samples look like real transactions. Known snag: if `CREATE CATALOG` fails on Free Edition (permissions),
-  switch `CATALOG` in Cell 1 to a pre-existing catalog from the Catalog browser and re-run.
+- ✅ `notebooks/01_phase1_data_generation.py` — **Phase 1**: synthetic internal + network (drop 5%,
+  amount-mismatch 2%, status-mismatch 2%), lands CSV to the volume. Now reads a `rows` widget (default 100K)
+  so Phase 6's scale lab can drive volume.
+- ✅ `notebooks/02_phase2_bronze_autoloader.py` — **Phase 2 Bronze**: Auto Loader (`cloudFiles`, availableNow)
+  → `bronze_internal`, `bronze_network` (+ `_ingest_ts`, `_source_file`, `_rescued_data`).
+- ✅ `notebooks/03_phase3_silver.py` — **Phase 3 Silver**: standardize/cast/DQ-reject/dedupe →
+  `silver_internal`, `silver_network` (+ `*_rejects`).
+- ✅ `notebooks/04_phase4_gold_reconciliation.py` — **Phase 4 Gold (centerpiece)**: full-outer-join recon,
+  MATCHED / MISMATCH_AMOUNT|STATUS|BOTH / UNMATCHED_* → `gold_recon_results`, `gold_exception_cases`
+  (case IDs + AUTO/MANUAL disposition).
+- ✅ `notebooks/05_phase5_reports.py` — **Phase 5 Reports**: `gold_report_funding_by_channel`,
+  `gold_report_cash_flow`, `gold_report_exception_summary`.
+- ✅ `notebooks/06_phase6_orchestration_scale.py` — **Phase 6**: Job-wiring driver (`dbutils.notebook.run`
+  chain + sample tasks JSON) and scale lab (`rows` widget, OPTIMIZE/ZORDER, `gold_scale_log`).
 
-## Next up — Phase 2 (Bronze, Auto Loader)
+⏳ **Next action is the user's: pull in the Databricks Git folder and run the notebooks in order 01→06.**
+Report counts/errors per phase. Known snag: if `CREATE CATALOG` fails on Free Edition (permissions), switch
+`CATALOG` to a pre-existing catalog from the Catalog browser in each notebook's config cell and re-run.
 
-Point `cloudFiles` at `/Volumes/workspace/settlement_recon/landing/internal/` and `.../network/`, infer/enforce
-schema, stream incrementally into `bronze_internal` and `bronze_network` Delta tables with checkpoint locations
-under the volume. Add `_ingest_ts` and `_source_file` (`_metadata.file_path`) audit columns. Keep it a separate
-notebook: `notebooks/02_phase2_bronze_autoloader.py`.
-
-### Remaining roadmap
-- Phase 3: `03_phase3_silver.py` — clean/standardize/dedupe both sides.
-- Phase 4: `04_phase4_gold_reconciliation.py` — match + classify + exception cases table.
-- Phase 5: `05_phase5_reports.py` — settlement/funding/exception aggregates.
-- Phase 6: `06_phase6_orchestration_scale.py` + a Databricks Job; scale to 1M/10M and log tuning results.
+### Open notes for whoever runs/extends it
+- Bronze types are Auto Loader–inferred; Silver is the type-enforcement boundary (defensive casts there).
+- `silver_*_rejects` retain all Bronze columns (incl. `_rescued_data`); clean Silver is projected to the
+  canonical contract — intentional asymmetry, no downstream consumer.
+- Scale lab: now wired via the `rows` widget end-to-end (Phase 1 reads it; Phase 6 passes it).
 
 ---
 
