@@ -87,7 +87,9 @@ def build_internal(n_rows: int, business_date: str) -> DataFrame:
             F.lit("INR").alias("currency"),
             F.element_at(F.array(*[F.lit(s) for s in STATUSES]), (h % len(STATUSES) + 1).cast("int")).alias("status"),
             F.concat(F.lit("ACCT"), F.lpad((h % 50000).cast("string"), 8, "0")).alias("account_id"),
-            (F.unix_timestamp(F.lit(business_date)) + (F.col("seq") % 86400)).cast("timestamp").alias("txn_ts"),
+            # business_date is date-only; give unix_timestamp the matching format so ANSI mode parses it,
+            # then spread txn_ts across the day by adding seconds derived from the row sequence.
+            (F.unix_timestamp(F.lit(business_date), "yyyy-MM-dd") + (F.col("seq") % 86400)).cast("timestamp").alias("txn_ts"),
         )
     )
 
