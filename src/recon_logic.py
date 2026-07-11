@@ -1,13 +1,13 @@
-from pyspark.sql import functions as F
-from pyspark.sql.window import Window
+from pyspark.sql import DataFrame
+import pyspark.sql.functions as F
 
-# Reconciliation tolerances
-AMOUNT_TOLERANCE       = 0.01
+AMOUNT_TOLERANCE = 0.01
 AUTO_RESOLVE_TOLERANCE = 1.00
 
-def reconcile_dataframes(internal_df, network_df, amount_tolerance=AMOUNT_TOLERANCE):
+def reconcile(internal_df: DataFrame, network_df: DataFrame) -> DataFrame:
     """
-    Given internal + network DataFrames, return a recon_results DataFrame.
+    Given internal + network DataFrames, return a recon_results DataFrame with
+    match_status, amount_diff, and disposition.
     """
     i = internal_df.alias("i")
     n = network_df.alias("n")
@@ -33,7 +33,7 @@ def reconcile_dataframes(internal_df, network_df, amount_tolerance=AMOUNT_TOLERA
         F.round(F.col("i.amount").cast("double") - F.col("n.amount").cast("double"), 2),
     ).otherwise(F.lit(None).cast("double"))
 
-    amount_mismatch = present_i & present_n & (F.abs(F.col("i.amount") - F.col("n.amount")) > amount_tolerance)
+    amount_mismatch = present_i & present_n & (F.abs(F.col("i.amount") - F.col("n.amount")) > AMOUNT_TOLERANCE)
     status_mismatch = present_i & present_n & (F.col("i.status") != F.col("n.status"))
 
     match_status = (
@@ -58,72 +58,16 @@ def reconcile_dataframes(internal_df, network_df, amount_tolerance=AMOUNT_TOLERA
             network_status.alias("network_status"),
             match_status.alias("match_status"),
         )
-        .withColumn(
-            "reason",
-            F.when(F.col("match_status") == "UNMATCHED_INTERNAL",
-                   F.lit("Transaction present in internal ledger but missing from network feed"))
-             .when(F.col("match_status") == "UNMATCHED_NETWORK",
-                   F.lit("Transaction present in network feed but missing from internal ledger"))
-             .when(F.col("match_status") == "MISMATCH_BOTH",
-                   F.concat(F.lit("Amount differs by "), F.col("amount_diff").cast("string"),
-                            F.lit(" and status differs ("), F.col("internal_status"),
-                            F.lit(" vs "), F.col("network_status"), F.lit(")")))
-             .when(F.col("match_status") == "MISMATCH_AMOUNT",
-                   F.concat(F.lit("Amount differs by "), F.col("amount_diff").cast("string"),
-                            F.lit(" (tolerance "), F.lit(str(amount_tolerance)), F.lit(")")))
-             .when(F.col("match_status") == "MISMATCH_STATUS",
-                   F.concat(F.lit("Status differs ("), F.col("internal_status"),
-                            F.lit(" vs "), F.col("network_status"), F.lit(")")))
-             .otherwise(F.lit("Amount and status agree within tolerance"))
-        )
     )
+
+    # Disposition is AUTO when match_status == MISMATCH_AMOUNT and abs(amount_diff) <= AUTO_RESOLVE_TOLERANCE, else MANUAL
+    recon = recon.withColumn(
+        "disposition",
+        F.when(
+            (F.col("match_status") == "MISMATCH_AMOUNT")
+            & (F.abs(F.col("amount_diff")) <= AUTO_RESOLVE_TOLERANCE),
+            F.lit("AUTO"),
+        ).otherwise(F.lit("MANUAL")),
+    )
+
     return recon
-
-def derive_exception_cases(recon_results_df, auto_resolve_tolerance=AUTO_RESOLVE_TOLERANCE):
-    """
-    Given recon_results DataFrame, derive exceptions and compute disposition.
-    """
-    non_matched = recon_results_df.filter(F.col("match_status") != "MATCHED")
-
-    # Deterministic per-date row numbering (ordered by txn_id) for stable case ids
-    w = Window.partitionBy("business_date").orderBy("txn_id")
-
-    exceptions = (
-        non_matched
-        .withColumn("row_number", F.row_number().over(w))
-        .withColumn(
-            "case_id",
-            F.concat(
-                F.lit("CASE-"),
-                F.col("business_date").cast("string"),
-                F.lit("-"),
-                F.lpad(F.col("row_number").cast("string"), 8, "0"),
-            ),
-        )
-        .withColumn("case_type", F.col("match_status"))
-        .withColumn(
-            "disposition",
-            F.when(
-                (F.col("case_type") == "MISMATCH_AMOUNT")
-                & (F.abs(F.col("amount_diff")) <= auto_resolve_tolerance),
-                F.lit("AUTO"),
-            ).otherwise(F.lit("MANUAL")),
-        )
-        .withColumn("created_ts", F.current_timestamp())
-        .select(
-            "case_id",
-            "txn_id",
-            "business_date",
-            "channel",
-            "case_type",
-            "internal_amount",
-            "network_amount",
-            "amount_diff",
-            "internal_status",
-            "network_status",
-            "disposition",
-            "reason",
-            "created_ts",
-        )
-    )
-    return exceptions

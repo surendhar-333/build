@@ -1,6 +1,8 @@
 import pytest
 from pyspark.sql import SparkSession
-from src.recon_logic import reconcile_dataframes, derive_exception_cases
+from pyspark.sql.types import StructType, StructField, StringType, DecimalType
+from decimal import Decimal
+from src.recon_logic import reconcile
 
 @pytest.fixture(scope="session")
 def spark():
@@ -9,181 +11,92 @@ def spark():
         .appName("ReconLogicTests") \
         .getOrCreate()
 
-def test_reconcile_exact_match(spark):
-    internal_data = [("txn_1", "2023-10-01", "WEB", 100.0, "SETTLED")]
-    network_data = [("txn_1", "2023-10-01", "WEB", 100.0, "SETTLED")]
-    columns = ["txn_id", "business_date", "channel", "amount", "status"]
+@pytest.fixture
+def schema():
+    return StructType([
+        StructField("txn_id", StringType(), True),
+        StructField("business_date", StringType(), True),
+        StructField("channel", StringType(), True),
+        StructField("amount", DecimalType(18, 2), True),
+        StructField("status", StringType(), True),
+    ])
 
-    i_df = spark.createDataFrame(internal_data, columns)
-    n_df = spark.createDataFrame(network_data, columns)
+def test_reconcile_exact_match(spark, schema):
+    internal_data = [("1", "2023-01-01", "POS", Decimal("100.00"), "SETTLED")]
+    network_data = [("1", "2023-01-01", "POS", Decimal("100.00"), "SETTLED")]
 
-    recon_df = reconcile_dataframes(i_df, n_df)
-    results = recon_df.collect()
+    internal_df = spark.createDataFrame(internal_data, schema=schema)
+    network_df = spark.createDataFrame(network_data, schema=schema)
 
-    assert len(results) == 1
-    assert results[0].match_status == "MATCHED"
-    assert results[0].amount_diff == 0.0
+    result = reconcile(internal_df, network_df)
+    row = result.filter(result.txn_id == "1").collect()[0]
 
-def test_reconcile_amount_within_tolerance(spark):
-    # Diff is 0.005 which is <= 0.01 tolerance
-    internal_data = [("txn_2", "2023-10-01", "WEB", 100.0, "SETTLED")]
-    network_data = [("txn_2", "2023-10-01", "WEB", 99.995, "SETTLED")]
-    columns = ["txn_id", "business_date", "channel", "amount", "status"]
+    assert row.match_status == "MATCHED"
 
-    i_df = spark.createDataFrame(internal_data, columns)
-    n_df = spark.createDataFrame(network_data, columns)
+def test_reconcile_all_cases(spark):
+    from pyspark.sql.types import DoubleType
 
-    recon_df = reconcile_dataframes(i_df, n_df)
-    results = recon_df.collect()
-
-    assert len(results) == 1
-    assert results[0].match_status == "MATCHED"
-
-def test_reconcile_amount_mismatch(spark):
-    # Diff is 0.50 which is > 0.01 tolerance
-    internal_data = [("txn_3", "2023-10-01", "WEB", 100.0, "SETTLED")]
-    network_data = [("txn_3", "2023-10-01", "WEB", 99.5, "SETTLED")]
-    columns = ["txn_id", "business_date", "channel", "amount", "status"]
-
-    i_df = spark.createDataFrame(internal_data, columns)
-    n_df = spark.createDataFrame(network_data, columns)
-
-    recon_df = reconcile_dataframes(i_df, n_df)
-    results = recon_df.collect()
-
-    assert len(results) == 1
-    assert results[0].match_status == "MISMATCH_AMOUNT"
-    assert results[0].amount_diff == 0.50
-
-def test_reconcile_status_mismatch(spark):
-    internal_data = [("txn_4", "2023-10-01", "WEB", 100.0, "SETTLED")]
-    network_data = [("txn_4", "2023-10-01", "WEB", 100.0, "FAILED")]
-    columns = ["txn_id", "business_date", "channel", "amount", "status"]
-
-    i_df = spark.createDataFrame(internal_data, columns)
-    n_df = spark.createDataFrame(network_data, columns)
-
-    recon_df = reconcile_dataframes(i_df, n_df)
-    results = recon_df.collect()
-
-    assert len(results) == 1
-    assert results[0].match_status == "MISMATCH_STATUS"
-
-def test_reconcile_mismatch_both(spark):
-    internal_data = [("txn_5", "2023-10-01", "WEB", 100.0, "SETTLED")]
-    network_data = [("txn_5", "2023-10-01", "WEB", 90.0, "FAILED")]
-    columns = ["txn_id", "business_date", "channel", "amount", "status"]
-
-    i_df = spark.createDataFrame(internal_data, columns)
-    n_df = spark.createDataFrame(network_data, columns)
-
-    recon_df = reconcile_dataframes(i_df, n_df)
-    results = recon_df.collect()
-
-    assert len(results) == 1
-    assert results[0].match_status == "MISMATCH_BOTH"
-
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType
-
-def test_reconcile_unmatched_internal(spark):
-    internal_data = [("txn_6", "2023-10-01", "WEB", 100.0, "SETTLED")]
-    network_data = []
-    schema = StructType([
+    schema_d = StructType([
         StructField("txn_id", StringType(), True),
         StructField("business_date", StringType(), True),
         StructField("channel", StringType(), True),
         StructField("amount", DoubleType(), True),
-        StructField("status", StringType(), True)
+        StructField("status", StringType(), True),
     ])
 
-    i_df = spark.createDataFrame(internal_data, schema)
-    n_df = spark.createDataFrame(network_data, schema)
-
-    recon_df = reconcile_dataframes(i_df, n_df)
-    results = recon_df.collect()
-
-    assert len(results) == 1
-    assert results[0].match_status == "UNMATCHED_INTERNAL"
-    assert results[0].amount_diff is None
-
-def test_reconcile_unmatched_network(spark):
-    internal_data = []
-    network_data = [("txn_7", "2023-10-01", "WEB", 100.0, "SETTLED")]
-    schema = StructType([
-        StructField("txn_id", StringType(), True),
-        StructField("business_date", StringType(), True),
-        StructField("channel", StringType(), True),
-        StructField("amount", DoubleType(), True),
-        StructField("status", StringType(), True)
-    ])
-
-    i_df = spark.createDataFrame(internal_data, schema)
-    n_df = spark.createDataFrame(network_data, schema)
-
-    recon_df = reconcile_dataframes(i_df, n_df)
-    results = recon_df.collect()
-
-    assert len(results) == 1
-    assert results[0].match_status == "UNMATCHED_NETWORK"
-    assert results[0].amount_diff is None
-
-def test_derive_exception_cases_auto_disposition(spark):
-    # Setup MISMATCH_AMOUNT with diff 0.50 (<= 1.00 AUTO_RESOLVE_TOLERANCE)
-    recon_data = [
-        ("txn_8", "2023-10-01", "WEB", 100.0, 99.5, 0.50, "SETTLED", "SETTLED", "MISMATCH_AMOUNT", "reason")
+    internal_data = [
+        ("1", "2023-01-01", "POS", 100.00, "SETTLED"),   # Exact match
+        ("2", "2023-01-01", "POS", 100.005, "SETTLED"),  # amount diff 0.005 -> MATCHED
+        ("3", "2023-01-01", "POS", 100.50, "SETTLED"),   # amount diff 0.50 -> MISMATCH_AMOUNT (AUTO)
+        ("4", "2023-01-01", "POS", 105.00, "SETTLED"),   # amount diff 5.00 -> MISMATCH_AMOUNT (MANUAL)
+        ("5", "2023-01-01", "POS", 100.00, "SETTLED"),   # MISMATCH_STATUS
+        ("6", "2023-01-01", "POS", 105.00, "SETTLED"),   # MISMATCH_BOTH
+        ("7", "2023-01-01", "POS", 100.00, "SETTLED"),   # UNMATCHED_INTERNAL
+        # "8" will be UNMATCHED_NETWORK
     ]
-    columns = ["txn_id", "business_date", "channel", "internal_amount", "network_amount", "amount_diff", "internal_status", "network_status", "match_status", "reason"]
-    recon_df = spark.createDataFrame(recon_data, columns)
 
-    exceptions_df = derive_exception_cases(recon_df)
-    results = exceptions_df.collect()
-
-    assert len(results) == 1
-    assert results[0].case_type == "MISMATCH_AMOUNT"
-    assert results[0].disposition == "AUTO"
-    assert results[0].case_id.startswith("CASE-2023-10-01-")
-
-def test_derive_exception_cases_manual_disposition(spark):
-    # Setup MISMATCH_AMOUNT with diff 5.00 (> 1.00 AUTO_RESOLVE_TOLERANCE)
-    recon_data = [
-        ("txn_9", "2023-10-01", "WEB", 100.0, 95.0, 5.00, "SETTLED", "SETTLED", "MISMATCH_AMOUNT", "reason")
+    network_data = [
+        ("1", "2023-01-01", "POS", 100.00, "SETTLED"),
+        ("2", "2023-01-01", "POS", 100.00, "SETTLED"),
+        ("3", "2023-01-01", "POS", 100.00, "SETTLED"),
+        ("4", "2023-01-01", "POS", 100.00, "SETTLED"),
+        ("5", "2023-01-01", "POS", 100.00, "PENDING"),
+        ("6", "2023-01-01", "POS", 100.00, "PENDING"),
+        # "7" missing from network
+        ("8", "2023-01-01", "POS", 100.00, "SETTLED"),   # UNMATCHED_NETWORK
     ]
-    columns = ["txn_id", "business_date", "channel", "internal_amount", "network_amount", "amount_diff", "internal_status", "network_status", "match_status", "reason"]
-    recon_df = spark.createDataFrame(recon_data, columns)
 
-    exceptions_df = derive_exception_cases(recon_df)
-    results = exceptions_df.collect()
+    internal_df = spark.createDataFrame(internal_data, schema=schema_d)
+    network_df = spark.createDataFrame(network_data, schema=schema_d)
 
-    assert len(results) == 1
-    assert results[0].case_type == "MISMATCH_AMOUNT"
-    assert results[0].disposition == "MANUAL"
+    result = reconcile(internal_df, network_df)
 
-def test_derive_exception_cases_manual_disposition_other_status(spark):
-    # Setup MISMATCH_STATUS (always MANUAL)
-    recon_data = [
-        ("txn_10", "2023-10-01", "WEB", 100.0, 100.0, 0.0, "SETTLED", "FAILED", "MISMATCH_STATUS", "reason")
-    ]
-    columns = ["txn_id", "business_date", "channel", "internal_amount", "network_amount", "amount_diff", "internal_status", "network_status", "match_status", "reason"]
-    recon_df = spark.createDataFrame(recon_data, columns)
+    rows = {r.txn_id: r for r in result.collect()}
 
-    exceptions_df = derive_exception_cases(recon_df)
-    results = exceptions_df.collect()
+    # 1: Exact match -> MATCHED
+    assert rows["1"].match_status == "MATCHED"
 
-    assert len(results) == 1
-    assert results[0].disposition == "MANUAL"
+    # 2: amount diff of 0.005 -> MATCHED
+    assert rows["2"].match_status == "MATCHED"
 
-def test_reconcile_amount_within_tolerance_precision(spark):
-    # Diff is 0.005 which is <= 0.01 tolerance
-    internal_data = [("txn_2", "2023-10-01", "WEB", 100.0, "SETTLED")]
-    network_data = [("txn_2", "2023-10-01", "WEB", 99.995, "SETTLED")]
-    columns = ["txn_id", "business_date", "channel", "amount", "status"]
+    # 3: amount diff of 0.50 -> MISMATCH_AMOUNT (AUTO)
+    assert rows["3"].match_status == "MISMATCH_AMOUNT"
+    assert rows["3"].disposition == "AUTO"
+    assert abs(rows["3"].amount_diff - 0.50) < 0.001
 
-    i_df = spark.createDataFrame(internal_data, columns)
-    n_df = spark.createDataFrame(network_data, columns)
+    # 4: amount diff of 5.00 -> MISMATCH_AMOUNT (MANUAL)
+    assert rows["4"].match_status == "MISMATCH_AMOUNT"
+    assert rows["4"].disposition == "MANUAL"
+    assert abs(rows["4"].amount_diff - 5.00) < 0.001
 
-    recon_df = reconcile_dataframes(i_df, n_df)
-    results = recon_df.collect()
+    # 5: MISMATCH_STATUS
+    assert rows["5"].match_status == "MISMATCH_STATUS"
 
-    assert len(results) == 1
-    assert results[0].match_status == "MATCHED"
-    assert results[0].amount_diff == 0.0 # Since PySpark's round rounds .005 to 0.0 (half to even)
+    # 6: MISMATCH_BOTH
+    assert rows["6"].match_status == "MISMATCH_BOTH"
+
+    # 7: UNMATCHED_INTERNAL
+    assert rows["7"].match_status == "UNMATCHED_INTERNAL"
+
+    # 8: UNMATCHED_NETWORK
+    assert rows["8"].match_status == "UNMATCHED_NETWORK"

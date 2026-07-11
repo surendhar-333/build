@@ -1,3 +1,2 @@
 pyspark
 pytest
-pytest-cov
