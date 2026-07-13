@@ -172,8 +172,6 @@ build/
 ├── tests/
 │   ├── test_recon_logic.py    # Local pytest coverage
 │   └── README.md              # Test instructions
-├── jules/
-│   └── tasks/                 # AI-agent task specifications
 ├── AGENT_CONTEXT.md           # Detailed project handoff and conventions
 ├── requirements-dev.txt       # Local development dependencies
 └── README.md
